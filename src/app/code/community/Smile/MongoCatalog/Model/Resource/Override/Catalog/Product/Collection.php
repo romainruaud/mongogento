@@ -21,6 +21,7 @@
  * @category  Smile
  * @package   Smile_MongoCatalog
  * @author    Aurelien FOUCRET <aurelien.foucret@smile.fr>
+ * @author    Richard BAYET <richard.bayet@smile.fr>
  * @copyright 2013 Smile (http://www.smile-oss.com/)
  * @license   http://opensource.org/licenses/afl-3.0.php  Academic Free License (AFL 3.0)
  */
@@ -224,7 +225,33 @@ class Smile_MongoCatalog_Model_Resource_Override_Catalog_Product_Collection exte
             }
 
             if ($this->getAttribute($attribute) === false || in_array($attribute, $sqlAttributes)) {
-                $conditionSql = $this->_getAttributeConditionSql($attribute, $condition, $joinType);
+
+                // Special case of the pseudo attribute "is_saleable" used on some grids by Magento
+                if (is_string($attribute) && $attribute == 'is_saleable') {
+                    $columns = $this->getSelect()->getPart(Zend_Db_Select::COLUMNS);
+                    foreach ($columns as $columnEntry) {
+                        list($correlationName, $column, $alias) = $columnEntry;
+                        if ($alias == 'is_saleable') {
+                            if ($column instanceof Zend_Db_Expr) {
+                                $field = $column;
+                            } else {
+                                $adapter = $this->getSelect()->getAdapter();
+                                if (empty($correlationName)) {
+                                    $field = $adapter->quoteColumnAs($column, $alias, true);
+                                } else {
+                                    $field = $adapter->quoteColumnAs(array($correlationName, $column), $alias, true);
+                                }
+                            }
+                            $this->getSelect()->where("{$field} = ?", $condition);
+                            $this->_hasSqlFilter = true;
+                            break;
+                        }
+                    }
+
+                } else {
+                    $conditionSql = $this->_getAttributeConditionSql($attribute, $condition, $joinType);
+                }
+
             } else {
                 $this->_addDocumentFilter($attribute, $condition, $joinType);
             }
@@ -315,7 +342,7 @@ class Smile_MongoCatalog_Model_Resource_Override_Catalog_Product_Collection exte
      * - array("like" => $likeValue)                      [OK]
      * - array("in" => array($inValues))                  [NOT IMPLEMENTED]
      * - array("nin" => array($notInValues))              [NOT IMPLEMENTED]
-     * - array("notnull" => $valueIsNotNull)              [NOT IMPLEMENTED]
+     * - array("notnull" => $valueIsNotNull)              [OK]
      * - array("null" => $valueIsNull)                    [NOT IMPLEMENTED]
      * - array("moreq" => $moreOrEqualValue)              [OK]
      * - array("gt" => $greaterValue)                     [OK]
@@ -397,6 +424,24 @@ class Smile_MongoCatalog_Model_Resource_Override_Catalog_Product_Collection exte
 
                 $result['$or'][0]['$and'][] = array($scopedAttributeName => array('$' . $type => $filterValue));
                 $result['$or'][1]['$and'][] = array($globalAttributeName => array('$' . $type => $filterValue));
+
+            } else if ($type == 'notnull') {
+
+                // I'm not sure about combining $exists and $ne:null is interesting
+                $result = $resultCascade;
+
+                $filterValue = (bool) $condition[$type];
+                if ($filterValue) {
+                    // asserts (notnull = true)
+                    $type = 'ne';
+                } else {
+                    // asserts (notnull = false) == (null = true)
+                    $type = 'eq';
+                }
+
+                $result['$or'][0]['$and'][] = array($scopedAttributeName => array('$' . $type => 'null'));
+                $result['$or'][1]['$and'][] = array($globalAttributeName => array('$' . $type => 'null'));
+
             } else {
                 Mage::throwException("{__FILE__} {$type} : unsuported MongoDB attribute filter");
             }
